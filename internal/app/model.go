@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -85,6 +86,7 @@ type Model struct {
 	screen       screen
 	activePane   pane
 	input        textinput.Model
+	readerInput  textarea.Model
 	inputFocused bool
 	inputMode    inputMode
 	waiting      bool
@@ -129,17 +131,25 @@ func NewModel(cfg config.Config, store *feed.Store) *Model {
 	input.Placeholder = "paste RSS feed URL to add, or search feeds..."
 	input.CharLimit = 512
 
+	readerInput := textarea.New()
+	readerInput.Prompt = "│ "
+	readerInput.Placeholder = "press / for command mode, t theme, v ai pane"
+	readerInput.ShowLineNumbers = false
+	readerInput.CharLimit = 4000
+	readerInput.SetHeight(4)
+
 	model := &Model{
-		cfg:        cfg,
-		store:      store,
-		screen:     screenFeeds,
-		activePane: paneArticle,
-		input:      input,
-		themeName:  cfg.Theme,
-		theme:      getTheme(cfg.Theme),
-		split:      clamp(cfg.DefaultSplit, 50, 90),
-		showAI:     true,
-		status:     "Press / to focus input, ? for help.",
+		cfg:         cfg,
+		store:       store,
+		screen:      screenFeeds,
+		activePane:  paneArticle,
+		input:       input,
+		readerInput: readerInput,
+		themeName:   cfg.Theme,
+		theme:       getTheme(cfg.Theme),
+		split:       clamp(cfg.DefaultSplit, 50, 90),
+		showAI:      true,
+		status:      "Press / to focus input, ? for help.",
 	}
 	model.reloadFeeds()
 	return model
@@ -196,6 +206,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.inputFocused = false
 		m.input.Blur()
 		m.input.SetValue("")
+		m.readerInput.Blur()
+		m.readerInput.Reset()
+		m.inputMode = inputNone
 		m.chatHistory = nil
 		m.waiting = false
 		m.chatClient = ai.NewClient(msg.markdown)
@@ -426,8 +439,12 @@ func (m *Model) handleReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.status = "Chat history cleared."
 				return m, nil
 			}
+		case "ctrl+z":
+			m.readerInput.Reset()
+			m.status = "Input cleared."
+			return m, nil
 		case "enter":
-			value := strings.TrimSpace(m.input.Value())
+			value := strings.TrimSpace(m.readerInput.Value())
 			if value == "" {
 				m.exitReaderInputMode()
 				return m, nil
@@ -435,12 +452,12 @@ func (m *Model) handleReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.inputMode == inputChat && m.waiting {
 				return m, nil
 			}
-			m.input.SetValue("")
+			m.readerInput.Reset()
 			return m, m.submitReaderInput(value)
 		}
 
 		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
+		m.readerInput, cmd = m.readerInput.Update(msg)
 		return m, cmd
 	}
 
@@ -526,6 +543,12 @@ func (m *Model) handleReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = err.Error()
 		} else {
 			m.status = "Copied article code blocks."
+		}
+	case "Y":
+		if err := copyToClipboard(m.activePaneContent()); err != nil {
+			m.status = err.Error()
+		} else {
+			m.status = "Copied active pane content."
 		}
 	default:
 		m.pendingG = false
@@ -623,7 +646,7 @@ func (m *Model) renderArticles() string {
 func (m *Model) renderReader() string {
 	header := m.renderTopBar("<- "+truncate(m.currentArticle.Title, max(20, m.width-30)), articleMeta(m.currentArticle))
 	leftWidth, rightWidth := m.readerPaneWidths()
-	contentHeight := max(8, m.height-8)
+	contentHeight := max(8, m.height-m.readerLayoutOffset())
 
 	leftBorder := lipgloss.Color(m.theme.Border)
 	rightBorder := lipgloss.Color(m.theme.Border)
@@ -644,10 +667,10 @@ func (m *Model) renderReader() string {
 	if m.inputMode == inputChat {
 		placeholder = "ask anything about this article..."
 	} else if m.inputMode == inputCommand {
-		placeholder = "theme, resize, ai on|off, save, toc, summary, copy code"
+		placeholder = "theme, resize, ai on|off, save, toc, summary, copy code|pane|chat|article"
 	}
-	input := m.renderInputBar(placeholder)
-	footer := m.renderStatus(m.progressLabel(), "tab pane  / cmd  i chat  v ai  t theme  [/] resize  y copy code  q back")
+	input := m.renderReaderInputBar(placeholder)
+	footer := m.renderStatus(m.progressLabel(), "tab pane  / cmd  i chat  v ai  t theme  [/] resize  y code  Y pane  q back")
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, input, footer)
 }
 
@@ -701,11 +724,14 @@ func (m *Model) renderHelp() string {
 		"  click a pane to focus it",
 		"  / opens command mode",
 		"  i or enter on chat pane starts chat input",
+		"  ctrl+u / ctrl+w / ctrl+k edit long prompts",
+		"  ctrl+z clears the entire reader input box",
 		"  j/k, d/u, gg, G scroll article",
 		"  [ and ] resize panes",
 		"  t cycles theme, v toggles AI pane",
 		"  y copies all fenced code blocks",
-		"  /theme [name], /resize 70, /ai off, /save, /summary, /toc, /open, /copy code",
+		"  Y copies the active pane",
+		"  /theme [name], /resize 70, /ai off, /save, /summary, /toc, /open, /copy code|pane|chat|article",
 		"",
 		"Ctrl+C always exits.",
 	}
@@ -719,7 +745,7 @@ func (m *Model) syncReaderLayout() {
 	}
 
 	leftWidth, rightWidth := m.readerPaneWidths()
-	contentHeight := max(8, m.height-8)
+	contentHeight := max(8, m.height-m.readerLayoutOffset())
 
 	articleOffset := m.articleViewport.YOffset
 	chatOffset := m.chatViewport.YOffset
@@ -734,6 +760,8 @@ func (m *Model) syncReaderLayout() {
 		m.chatViewport.SetContent(m.renderChatContent())
 		m.chatViewport.SetYOffset(chatOffset)
 	}
+
+	m.readerInput.SetWidth(max(20, m.width-6))
 }
 
 func (m *Model) renderArticle(width int) string {
@@ -895,6 +923,18 @@ func (m *Model) runSlashCommand(value string) tea.Cmd {
 			} else {
 				m.status = "Copied article code blocks."
 			}
+		case "pane":
+			if err := copyToClipboard(m.activePaneContent()); err != nil {
+				m.status = err.Error()
+			} else {
+				m.status = "Copied active pane content."
+			}
+		case "chat":
+			if err := copyToClipboard(m.chatTranscript()); err != nil {
+				m.status = err.Error()
+			} else {
+				m.status = "Copied chat transcript."
+			}
 		case "url":
 			if err := copyToClipboard(m.currentArticle.URL); err != nil {
 				m.status = err.Error()
@@ -908,7 +948,7 @@ func (m *Model) runSlashCommand(value string) tea.Cmd {
 				m.status = "Copied article markdown."
 			}
 		default:
-			m.status = "Usage: /copy code|url|article"
+			m.status = "Usage: /copy code|pane|chat|url|article"
 		}
 	case "help":
 		m.showHelp = true
@@ -1224,26 +1264,26 @@ func (m *Model) focusChatInput() {
 	m.activePane = paneChat
 	m.inputFocused = true
 	m.inputMode = inputChat
-	m.input.Placeholder = "ask anything about this article..."
-	m.input.Focus()
+	m.readerInput.Placeholder = "ask anything about this article..."
+	m.readerInput.Focus()
 	m.status = "Chat input active."
 }
 
 func (m *Model) focusCommandInput(seed string) {
 	m.inputFocused = true
 	m.inputMode = inputCommand
-	m.input.Placeholder = "theme, resize, ai on|off, save, toc, summary, copy code"
-	m.input.Focus()
-	m.input.SetValue(seed)
-	m.input.CursorEnd()
+	m.readerInput.Placeholder = "theme, resize, ai on|off, save, toc, summary, copy code|pane|chat|article"
+	m.readerInput.Focus()
+	m.readerInput.SetValue(seed)
+	m.readerInput.CursorEnd()
 	m.status = "Command mode."
 }
 
 func (m *Model) exitReaderInputMode() {
 	m.inputFocused = false
 	m.inputMode = inputNone
-	m.input.Blur()
-	m.input.SetValue("")
+	m.readerInput.Blur()
+	m.readerInput.Reset()
 	if m.activePane == paneChat && m.showAI {
 		m.status = "Chat focus. Press i or Enter to type."
 	} else {
@@ -1274,6 +1314,22 @@ func (m *Model) glamourStyleName() string {
 	default:
 		return "dark"
 	}
+}
+
+func (m *Model) renderReaderInputBar(placeholder string) string {
+	if m.readerInput.Placeholder != placeholder {
+		m.readerInput.Placeholder = placeholder
+	}
+	m.readerInput.SetWidth(max(20, m.width-6))
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(m.theme.Border)).
+		Width(m.width - 2)
+	return style.Render(m.readerInput.View())
+}
+
+func (m *Model) readerLayoutOffset() int {
+	return m.readerInput.Height() + 8
 }
 
 func copyToClipboard(value string) error {
@@ -1307,6 +1363,28 @@ func extractArticleCode(markdown string) string {
 		}
 	}
 	return strings.Join(blocks, "\n\n")
+}
+
+func (m *Model) activePaneContent() string {
+	if m.activePane == paneChat && m.showAI {
+		return m.chatTranscript()
+	}
+	return m.articleMarkdown
+}
+
+func (m *Model) chatTranscript() string {
+	if len(m.chatHistory) == 0 {
+		return ""
+	}
+	var lines []string
+	for _, item := range m.chatHistory {
+		label := "AI"
+		if item.Role == "user" {
+			label = "You"
+		}
+		lines = append(lines, label+": "+item.Content)
+	}
+	return strings.Join(lines, "\n\n")
 }
 
 func looksLikeURL(value string) bool {
