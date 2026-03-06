@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -92,6 +93,7 @@ type Model struct {
 	waiting      bool
 	showHelp     bool
 	showAI       bool
+	mouseSelect  bool
 	pendingG     bool
 
 	theme     Theme
@@ -137,6 +139,10 @@ func NewModel(cfg config.Config, store *feed.Store) *Model {
 	readerInput.ShowLineNumbers = false
 	readerInput.CharLimit = 4000
 	readerInput.SetHeight(4)
+	readerInput.KeyMap.InsertNewline = key.NewBinding(
+		key.WithKeys("alt+enter", "ctrl+j"),
+		key.WithHelp("alt+enter", "insert newline"),
+	)
 
 	model := &Model{
 		cfg:         cfg,
@@ -421,6 +427,16 @@ func (m *Model) handleArticles(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.mouseSelect {
+		switch msg.String() {
+		case "esc", "enter", "s":
+			m.mouseSelect = false
+			m.status = "Reader controls restored."
+			return m, enableMouseCmd()
+		}
+		return m, nil
+	}
+
 	if m.inputFocused {
 		switch msg.String() {
 		case "ctrl+c":
@@ -499,6 +515,11 @@ func (m *Model) handleReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "v":
 		m.toggleAIPane()
 		return m, nil
+	case "s":
+		m.mouseSelect = true
+		m.blurReaderInputMode()
+		m.status = "Terminal selection mode. Drag to select text, then press esc or s to return."
+		return m, disableMouseCmd()
 	}
 
 	if m.activePane == paneChat {
@@ -668,9 +689,15 @@ func (m *Model) renderReader() string {
 		placeholder = "ask anything about this article..."
 	} else if m.inputMode == inputCommand {
 		placeholder = "theme, resize, ai on|off, save, toc, summary, copy code|pane|chat|article"
+	} else if m.mouseSelect {
+		placeholder = "terminal selection mode active: drag to select, esc or s to return"
 	}
 	input := m.renderReaderInputBar(placeholder)
-	footer := m.renderStatus(m.progressLabel(), "tab pane  / cmd  i chat  v ai  t theme  [/] resize  y code  Y pane  q back")
+	footerText := "tab pane  / cmd  i chat  s select  v ai  t theme  [/] resize  y code  Y pane"
+	if m.mouseSelect {
+		footerText = "mouse select active  drag to copy text  esc return"
+	}
+	footer := m.renderStatus(m.progressLabel(), footerText)
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, input, footer)
 }
 
@@ -724,6 +751,9 @@ func (m *Model) renderHelp() string {
 		"  click a pane to focus it",
 		"  / opens command mode",
 		"  i or enter on chat pane starts chat input",
+		"  s enters terminal selection mode for free mouse selection",
+		"  esc or s exits terminal selection mode",
+		"  alt+enter or ctrl+j inserts a newline in the input box",
 		"  ctrl+u / ctrl+w / ctrl+k edit long prompts",
 		"  ctrl+z clears the entire reader input box",
 		"  j/k, d/u, gg, G scroll article",
@@ -1344,6 +1374,18 @@ func (m *Model) renderReaderInputBar(placeholder string) string {
 
 func (m *Model) readerLayoutOffset() int {
 	return m.readerInput.Height() + 8
+}
+
+func disableMouseCmd() tea.Cmd {
+	return func() tea.Msg {
+		return tea.DisableMouse()
+	}
+}
+
+func enableMouseCmd() tea.Cmd {
+	return func() tea.Msg {
+		return tea.EnableMouseCellMotion()
+	}
 }
 
 func copyToClipboard(value string) error {

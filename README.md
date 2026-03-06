@@ -28,6 +28,7 @@ tryoutshell-rss-feed
 - `Tab` switches pane focus
 - `i` or `Enter` on the AI pane starts chat input
 - `/` opens command mode for slash commands like `/theme`, `/resize 80`, `/ai off`
+- `Alt+Enter` or `Ctrl+J` inserts a newline in the multiline input box
 - `t` cycles themes
 - `v` toggles the AI pane for focus reading
 - `[` and `]` resize the split when AI is visible
