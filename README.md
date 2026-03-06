@@ -32,8 +32,9 @@ tryoutshell-rss-feed
 - `v` toggles the AI pane for focus reading
 - `[` and `]` resize the split when AI is visible
 - `y` copies all fenced code blocks from the current article
+- `Y` copies the active pane
 - mouse wheel scrolls the pane under the cursor
-- clicking a pane focuses it
+- clicking a pane focuses it without clearing the draft input
 
 ## Storage
 

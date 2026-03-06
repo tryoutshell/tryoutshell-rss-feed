@@ -249,7 +249,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.chatHistory = append(m.chatHistory, ai.Message{Role: "assistant", Content: msg.content})
 		}
-		m.chatViewport.SetContent(m.renderChatContent())
+		m.refreshReaderViewports()
 		m.chatViewport.GotoBottom()
 		return m, nil
 
@@ -435,7 +435,7 @@ func (m *Model) handleReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "ctrl+l":
 			if m.inputMode == inputChat {
 				m.chatHistory = nil
-				m.chatViewport.SetContent(m.renderChatContent())
+				m.refreshReaderViewports()
 				m.status = "Chat history cleared."
 				return m, nil
 			}
@@ -750,14 +750,12 @@ func (m *Model) syncReaderLayout() {
 	articleOffset := m.articleViewport.YOffset
 	chatOffset := m.chatViewport.YOffset
 
-	renderedArticle := m.renderArticle(leftWidth - 6)
 	m.articleViewport = viewport.New(max(10, leftWidth-6), max(3, contentHeight-2))
-	m.articleViewport.SetContent(renderedArticle)
+	m.chatViewport = viewport.New(max(10, rightWidth-6), max(3, contentHeight-2))
+	m.refreshReaderViewports()
 	m.articleViewport.SetYOffset(articleOffset)
 
 	if m.showAI {
-		m.chatViewport = viewport.New(max(10, rightWidth-6), max(3, contentHeight-2))
-		m.chatViewport.SetContent(m.renderChatContent())
 		m.chatViewport.SetYOffset(chatOffset)
 	}
 
@@ -819,6 +817,13 @@ func (m *Model) renderChatContent() string {
 	return strings.Join(lines, "\n")
 }
 
+func (m *Model) refreshReaderViewports() {
+	m.articleViewport.SetContent(m.renderArticle(m.articleViewport.Width))
+	if m.showAI && m.chatViewport.Width > 0 {
+		m.chatViewport.SetContent(m.renderChatContent())
+	}
+}
+
 func (m *Model) submitReaderInput(value string) tea.Cmd {
 	if strings.HasPrefix(value, "/") {
 		return m.runSlashCommand(value)
@@ -827,13 +832,13 @@ func (m *Model) submitReaderInput(value string) tea.Cmd {
 	m.chatHistory = append(m.chatHistory, ai.Message{Role: "user", Content: value})
 	if m.chatClient == nil || !m.chatClient.Available() {
 		m.chatHistory = append(m.chatHistory, ai.Message{Role: "assistant", Content: "No API key found. Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or GEMINI_API_KEY."})
-		m.chatViewport.SetContent(m.renderChatContent())
+		m.refreshReaderViewports()
 		m.chatViewport.GotoBottom()
 		return nil
 	}
 
 	m.waiting = true
-	m.chatViewport.SetContent(m.renderChatContent())
+	m.refreshReaderViewports()
 	m.chatViewport.GotoBottom()
 
 	client := m.chatClient
@@ -903,7 +908,7 @@ func (m *Model) runSlashCommand(value string) tea.Cmd {
 		return m.submitReaderInput("Summarize this article in 5 concise bullets with the main takeaways.")
 	case "toc":
 		m.chatHistory = append(m.chatHistory, ai.Message{Role: "assistant", Content: buildTOC(m.articleMarkdown)})
-		m.chatViewport.SetContent(m.renderChatContent())
+		m.refreshReaderViewports()
 		m.chatViewport.GotoBottom()
 	case "open":
 		if err := openBrowser(m.currentArticle.URL); err != nil {
@@ -1218,13 +1223,14 @@ func (m *Model) handleReaderMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if msg.Button == tea.MouseButtonLeft {
 		if inArticle || !m.showAI {
 			m.activePane = paneArticle
-			m.exitReaderInputMode()
+			m.blurReaderInputMode()
 			m.status = "Article focus."
 		} else {
 			m.activePane = paneChat
-			m.exitReaderInputMode()
+			m.blurReaderInputMode()
 			m.status = "Chat focus. Press i or Enter to type."
 		}
+		m.refreshReaderViewports()
 		return m, nil
 	}
 
@@ -1253,10 +1259,12 @@ func (m *Model) readerPaneWidths() (int, int) {
 func (m *Model) togglePaneFocus() {
 	if m.activePane == paneArticle {
 		m.activePane = paneChat
+		m.refreshReaderViewports()
 		m.status = "Chat focus. Press i or Enter to type."
 		return
 	}
 	m.activePane = paneArticle
+	m.refreshReaderViewports()
 	m.status = "Article focus."
 }
 
@@ -1277,6 +1285,12 @@ func (m *Model) focusCommandInput(seed string) {
 	m.readerInput.SetValue(seed)
 	m.readerInput.CursorEnd()
 	m.status = "Command mode."
+}
+
+func (m *Model) blurReaderInputMode() {
+	m.inputFocused = false
+	m.inputMode = inputNone
+	m.readerInput.Blur()
 }
 
 func (m *Model) exitReaderInputMode() {
