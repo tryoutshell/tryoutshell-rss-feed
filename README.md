@@ -2,6 +2,10 @@
 
 A terminal-native RSS reader with an integrated AI assistant.
 
+
+<img width="1200" height="766" alt="image" src="https://github.com/user-attachments/assets/1c34de57-f587-4ab9-8d3a-4174d93da7e9" />
+
+
 ## Commands
 
 ```bash
